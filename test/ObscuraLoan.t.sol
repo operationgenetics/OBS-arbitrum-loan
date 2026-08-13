@@ -47,7 +47,7 @@ contract ObscuraLoanTest is Test {
         assertEq(loanContract.liquidityPool(), 5000 * 10**18);
 
         bytes memory dummyClassicalSig = hex"deadbeef";
-        bytes memory dummyPqcProof = hex"crystalsdilithiumlatticepayload";
+        bytes memory dummyPqcProof = bytes("crystalsdilithiumlatticepayload");
         bytes32 actionHash = keccak256(abi.encodePacked(borrower, uint256(1000 * 10**18)));
 
         bool isValidPQC = verifyHybridPQCProof(dummyClassicalSig, dummyPqcProof, actionHash);

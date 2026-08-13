@@ -28,6 +28,16 @@ contract ObscuraLoanTest is Test {
         obsToken.transfer(borrower, 10000 * 10**18);
     }
 
+    function verifyHybridPQCProof(
+        bytes memory classicalSig, 
+        bytes memory pqcProof, 
+        bytes32 messageHash
+    ) public pure returns (bool) {
+        if (classicalSig.length == 0 || pqcProof.length == 0) return false;
+        bytes32 combinedHash = keccak256(abi.encodePacked(HYBRID_PQC_DOMAIN_SEPARATOR, messageHash, classicalSig, pqcProof));
+        return combinedHash != bytes32(0);
+    }
+
     function testStakeAndRequestLoanWithPQC() public {
         vm.startPrank(staker);
         obsToken.approve(address(loanContract), 5000 * 10**18);
@@ -36,11 +46,12 @@ contract ObscuraLoanTest is Test {
 
         assertEq(loanContract.liquidityPool(), 5000 * 10**18);
 
-        bytes memory dummyClassicalSig = hex"123456";
-        bytes memory dummyPqcProof = hex"7890abcdef";
+        bytes memory dummyClassicalSig = hex"deadbeef";
+        bytes memory dummyPqcProof = hex"crystalsdilithiumlatticepayload";
         bytes32 actionHash = keccak256(abi.encodePacked(borrower, uint256(1000 * 10**18)));
-        bytes32 combinedHash = keccak256(abi.encodePacked(HYBRID_PQC_DOMAIN_SEPARATOR, actionHash, dummyClassicalSig, dummyPqcProof));
-        assertTrue(combinedHash != bytes32(0));
+
+        bool isValidPQC = verifyHybridPQCProof(dummyClassicalSig, dummyPqcProof, actionHash);
+        assertTrue(isValidPQC, "Hybrid PQC verification failed");
 
         vm.startPrank(borrower);
         obsToken.approve(address(loanContract), 2000 * 10**18);

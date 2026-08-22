@@ -59,38 +59,46 @@ contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
         return OBS_TOKEN.balanceOf(address(this));
     }
 
+    /// @notice Total assets under management (liquid cash + active principal out on loan)
+    function totalAssets() public view returns (uint256) {
+        return totalPooledOBS() + totalActiveDebt;
+    }
+
     function stakeLiquidity(uint256 obsAmount) external nonReentrant whenNotPaused returns (uint256 lpToMint) {
         require(obsAmount > 0, "Cannot stake zero");
-        uint256 totalOBS = totalPooledOBS();
+        
+        uint256 assetsBefore = totalAssets() - obsAmount;
         uint256 totalShares = totalSupply();
 
         OBS_TOKEN.safeTransferFrom(msg.sender, address(this), obsAmount);
 
-        if (totalShares == 0 || totalOBS == obsAmount) {
+        if (totalShares == 0 || assetsBefore == 0) {
             lpToMint = obsAmount;
         } else {
-            lpToMint = (obsAmount * totalShares) / (totalOBS - obsAmount);
+            lpToMint = (obsAmount * totalShares) / assetsBefore;
         }
 
+        require(lpToMint > 0, "Mint zero LP");
         _mint(msg.sender, lpToMint);
+
         emit LiquidityStaked(msg.sender, obsAmount, lpToMint);
     }
 
     function withdrawLiquidity(uint256 lpAmount) external nonReentrant returns (uint256 obsToReturn) {
         require(lpAmount > 0, "Cannot withdraw zero");
         uint256 totalShares = totalSupply();
-        uint256 totalOBS = totalPooledOBS();
+        
+        obsToReturn = (lpAmount * totalAssets()) / totalShares;
 
-        obsToReturn = (lpAmount * totalOBS) / totalShares;
-        uint256 freeLiquidity = totalOBS >= totalActiveDebt ? totalOBS - totalActiveDebt : 0;
-        require(obsToReturn <= freeLiquidity, "Insufficient free liquidity");
+        uint256 freeLiquidity = totalPooledOBS();
+        require(obsToReturn <= freeLiquidity, "Insufficient free liquidity in pool");
 
         _burn(msg.sender, lpAmount);
         OBS_TOKEN.safeTransfer(msg.sender, obsToReturn);
+
         emit LiquidityWithdrawn(msg.sender, obsToReturn, lpAmount);
     }
 
-    /// @notice AI Oracle update hook for behavior-based credit scoring
     function updateCreditScore(address user, uint256 score) external {
         require(msg.sender == aiOracle || msg.sender == owner(), "Unauthorized AI Oracle");
         require(score >= BASE_CREDIT && score <= MAX_CREDIT, "Score out of bounds");
@@ -113,7 +121,7 @@ contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
         uint256 currentLtvBps = calculateLTV(msg.sender); 
         require(amount <= (collateral * currentLtvBps) / 10000, "LTV Exceeded");
         
-        uint256 freeLiquidity = totalPooledOBS() >= totalActiveDebt ? totalPooledOBS() - totalActiveDebt : 0;
+        uint256 freeLiquidity = totalPooledOBS();
         require(freeLiquidity >= amount, "Insufficient pool liquidity");
 
         uint256 durationSeconds = duration == LoanDuration.Days90 ? 7_776_000 : (duration == LoanDuration.Year1 ? 31_536_000 : 473_040_000);
@@ -149,14 +157,12 @@ contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit LoanRepaid(msg.sender, principalRepayment, interest);
     }
 
-    /// @notice Automated liquidation mechanism for expired or undercollateralized loans
     function automatedLiquidation(address borrower) external nonReentrant {
         Loan memory loan = loans[borrower];
         require(loan.principal > 0, "No active loan for borrower");
 
         bool isExpired = block.timestamp > loan.maturity;
         bool isUndercollateralized = loan.principal > (loan.collateral * 95) / 100;
-
         require(isExpired || isUndercollateralized, "Loan is currently healthy");
 
         totalActiveDebt = totalActiveDebt >= loan.principal ? totalActiveDebt - loan.principal : 0;

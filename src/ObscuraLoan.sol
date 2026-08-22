@@ -1,16 +1,28 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract ObscuraLoan is Ownable, ReentrancyGuard {
+contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
+    using SafeERC20 for IERC20;
+
+    // Permanently hardcoded OBS token address
+    address public constant OBS_TOKEN_ADDRESS = 0x2D8760e2877148d239a54952A458710553B2B54b;
     IERC20 public immutable OBS_TOKEN;
+    
+    address public aiOracle;
 
-    uint256 public constant INTEREST_RATE_BPS = 100; // 1%
+    uint256 public constant INTEREST_RATE_BPS = 100; // 1% fixed interest
     uint256 public constant BASE_CREDIT = 500;
-    uint256 public constant MAX_CREDIT = 700;
+    uint256 public constant MAX_CREDIT = 850;         // Expanded credit ceiling for AI oracle
+    
+    // LTV parameters (scaled by 100, e.g., 150% = 15000)
+    uint256 public constant MIN_LTV_BPS = 5000;       // 50%
+    uint256 public constant MAX_LTV_BPS = 15000;      // 150% max LTV for elite AI credit scores
 
     enum LoanDuration { Days90, Year1, Year15 }
 
@@ -18,50 +30,95 @@ contract ObscuraLoan is Ownable, ReentrancyGuard {
         uint256 principal;
         uint256 collateral;
         uint256 maturity;
+        uint256 ltvAtBorrow;
     }
 
     uint256 public liquidityPool;
+    uint256 public totalActiveDebt;
     
     mapping(address => uint256) public creditScores;
     mapping(address => Loan) public loans;
 
     event LiquidityStaked(address indexed staker, uint256 amount);
-    event LoanRequested(address indexed borrower, uint256 amount, uint256 collateral, uint256 maturity);
+    event LiquidityWithdrawn(address indexed staker, uint256 amount);
+    event LoanRequested(address indexed borrower, uint256 amount, uint256 collateral, uint256 ltv, uint256 maturity);
     event LoanRepaid(address indexed borrower, uint256 principalPaid, uint256 interestPaid);
-    event LoanLiquidated(address indexed borrower, address indexed liquidator);
+    event LoanLiquidated(address indexed borrower, address indexed liquidator, uint256 seizedCollateral);
     event CreditScoreUpdated(address indexed user, uint256 newScore);
+    event AIOracleUpdated(address indexed newOracle);
 
-    constructor(address _obsTokenAddress) Ownable(msg.sender) {
-        require(_obsTokenAddress != address(0), "Invalid token address");
-        OBS_TOKEN = IERC20(_obsTokenAddress);
+    modifier onlyAIOracleOrOwner() {
+        require(msg.sender == aiOracle || msg.sender == owner(), "Unauthorized: AI Oracle or Owner only");
+        _;
     }
 
-    function stakeLiquidity(uint256 amount) external nonReentrant {
+    constructor(address _aiOracle) Ownable(msg.sender) {
+        require(_aiOracle != address(0), "Invalid oracle address");
+        OBS_TOKEN = IERC20(OBS_TOKEN_ADDRESS);
+        aiOracle = _aiOracle;
+    }
+
+    function setAIOracle(address _newOracle) external onlyOwner {
+        require(_newOracle != address(0), "Invalid oracle address");
+        aiOracle = _newOracle;
+        emit AIOracleUpdated(_newOracle);
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    function stakeLiquidity(uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "Cannot stake zero");
-        require(OBS_TOKEN.transferFrom(msg.sender, address(this), amount), "Transfer failed");
-        
+        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), amount);
         liquidityPool += amount;
         emit LiquidityStaked(msg.sender, amount);
     }
 
-    function requestLoan(uint256 amount, uint256 collateral, LoanDuration duration) external nonReentrant {
+    function withdrawLiquidity(uint256 amount) external nonReentrant {
+        require(amount > 0, "Cannot withdraw zero");
+        uint256 freeLiquidity = liquidityPool >= totalActiveDebt ? liquidityPool - totalActiveDebt : 0;
+        require(amount <= freeLiquidity, "Insufficient free liquidity in pool");
+
+        liquidityPool -= amount;
+        OBS_TOKEN.safeTransfer(msg.sender, amount);
+        emit LiquidityWithdrawn(msg.sender, amount);
+    }
+
+    function updateCreditScore(address user, uint256 score) external onlyAIOracleOrOwner {
+        require(score >= BASE_CREDIT && score <= MAX_CREDIT, "Score out of bounds");
+        creditScores[user] = score;
+        emit CreditScoreUpdated(user, score);
+    }
+
+    /// @notice Mathematically calculates dynamic LTV up to 150% based on AI credit score
+    function calculateLTV(address borrower) public view returns (uint256) {
+        uint256 score = creditScores[borrower];
+        if (score == 0) score = BASE_CREDIT;
+        if (score < BASE_CREDIT) score = BASE_CREDIT;
+        if (score > MAX_CREDIT) score = MAX_CREDIT;
+
+        uint256 ltvSpread = MAX_LTV_BPS - MIN_LTV_BPS; // 10000 bps (100%)
+        uint256 scoreSpread = MAX_CREDIT - BASE_CREDIT;  // 350 points
+        
+        return MIN_LTV_BPS + (((score - BASE_CREDIT) * ltvSpread) / scoreSpread);
+    }
+
+    function requestLoan(uint256 amount, uint256 collateral, LoanDuration duration) external nonReentrant whenNotPaused {
         require(amount > 0, "Invalid loan amount");
         require(loans[msg.sender].principal == 0, "Active loan exists");
 
-        uint256 score = creditScores[msg.sender];
-        if (score == 0) {
-            score = BASE_CREDIT;
-            creditScores[msg.sender] = BASE_CREDIT;
-        }
-
-        uint256 clampedScore = score;
-        if (clampedScore < BASE_CREDIT) clampedScore = BASE_CREDIT;
-        if (clampedScore > MAX_CREDIT) clampedScore = MAX_CREDIT;
-
-        uint256 ltv = 50 + (((clampedScore - BASE_CREDIT) * 45) / 200);
-        uint256 maxAllowedBorrow = (collateral * ltv) / 100;
+        uint256 currentLtvBps = calculateLTV(msg.sender); // Up to 15000 (150% LTV)
+        
+        uint256 maxAllowedBorrow = (collateral * currentLtvBps) / 10000;
         require(amount <= maxAllowedBorrow, "LTV Exceeded");
-        require(liquidityPool >= amount, "Insufficient pool liquidity");
+        
+        uint256 freeLiquidity = liquidityPool >= totalActiveDebt ? liquidityPool - totalActiveDebt : 0;
+        require(freeLiquidity >= amount, "Insufficient pool liquidity");
 
         uint256 durationSeconds;
         if (duration == LoanDuration.Days90) {
@@ -69,23 +126,24 @@ contract ObscuraLoan is Ownable, ReentrancyGuard {
         } else if (duration == LoanDuration.Year1) {
             durationSeconds = 31_536_000;
         } else {
-            durationSeconds = 473_040_000;
+            durationSeconds = 473_040_000; // 1.5 Years
         }
 
         uint256 maturityTime = block.timestamp + durationSeconds;
 
-        require(OBS_TOKEN.transferFrom(msg.sender, address(this), collateral), "Collateral transfer failed");
+        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), collateral);
 
-        liquidityPool -= amount;
-        require(OBS_TOKEN.transfer(msg.sender, amount), "Loan disbursement failed");
+        totalActiveDebt += amount;
+        OBS_TOKEN.safeTransfer(msg.sender, amount);
 
         loans[msg.sender] = Loan({
             principal: amount,
             collateral: collateral,
-            maturity: maturityTime
+            maturity: maturityTime,
+            ltvAtBorrow: currentLtvBps
         });
 
-        emit LoanRequested(msg.sender, amount, collateral, maturityTime);
+        emit LoanRequested(msg.sender, amount, collateral, currentLtvBps, maturityTime);
     }
 
     function repayLoan(uint256 principalRepayment) external nonReentrant {
@@ -96,14 +154,15 @@ contract ObscuraLoan is Ownable, ReentrancyGuard {
         uint256 interest = (principalRepayment * INTEREST_RATE_BPS) / 10000;
         uint256 totalPayment = principalRepayment + interest;
 
-        require(OBS_TOKEN.transferFrom(msg.sender, address(this), totalPayment), "Repayment transfer failed");
+        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), totalPayment);
 
-        liquidityPool += totalPayment;
+        liquidityPool += interest;
+        totalActiveDebt -= principalRepayment;
 
         if (principalRepayment == loan.principal) {
             uint256 collateralReturn = loan.collateral;
             delete loans[msg.sender];
-            require(OBS_TOKEN.transfer(msg.sender, collateralReturn), "Collateral return failed");
+            OBS_TOKEN.safeTransfer(msg.sender, collateralReturn);
         } else {
             loans[msg.sender].principal -= principalRepayment;
             loans[msg.sender].collateral -= (loan.collateral * principalRepayment) / loan.principal;
@@ -117,24 +176,22 @@ contract ObscuraLoan is Ownable, ReentrancyGuard {
         require(loan.principal > 0, "No Loan");
 
         bool isExpired = block.timestamp > loan.maturity;
-        bool isUndercollateralized = loan.principal > (loan.collateral * 90) / 100;
+        bool isUndercollateralized = loan.principal > (loan.collateral * 95) / 100;
 
         require(isExpired || isUndercollateralized, "Loan is healthy");
+
+        totalActiveDebt = totalActiveDebt >= loan.principal ? totalActiveDebt - loan.principal : 0;
 
         uint256 score = creditScores[borrower];
         if (score == 0) score = BASE_CREDIT;
         
-        uint256 newScore = score >= 50 ? score - 50 : 0;
+        uint256 newScore = score >= 75 ? score - 75 : BASE_CREDIT;
         creditScores[borrower] = newScore;
 
+        uint256 seizedCollateral = loan.collateral;
         delete loans[borrower];
 
         emit CreditScoreUpdated(borrower, newScore);
-        emit LoanLiquidated(borrower, msg.sender);
-    }
-
-    function setCreditScore(address user, uint256 score) external onlyOwner {
-        creditScores[user] = score;
-        emit CreditScoreUpdated(user, score);
+        emit LoanLiquidated(borrower, msg.sender, seizedCollateral);
     }
 }

@@ -59,7 +59,6 @@ contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
         return OBS_TOKEN.balanceOf(address(this));
     }
 
-    /// @notice Total assets under management (liquid cash + active principal out on loan)
     function totalAssets() public view returns (uint256) {
         return totalPooledOBS() + totalActiveDebt;
     }
@@ -67,15 +66,15 @@ contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
     function stakeLiquidity(uint256 obsAmount) external nonReentrant whenNotPaused returns (uint256 lpToMint) {
         require(obsAmount > 0, "Cannot stake zero");
         
-        uint256 assetsBefore = totalAssets() - obsAmount;
         uint256 totalShares = totalSupply();
+        uint256 currentAssets = totalAssets();
 
         OBS_TOKEN.safeTransferFrom(msg.sender, address(this), obsAmount);
 
-        if (totalShares == 0 || assetsBefore == 0) {
+        if (totalShares == 0 || currentAssets == 0) {
             lpToMint = obsAmount;
         } else {
-            lpToMint = (obsAmount * totalShares) / assetsBefore;
+            lpToMint = (obsAmount * totalShares) / (currentAssets - obsAmount);
         }
 
         require(lpToMint > 0, "Mint zero LP");

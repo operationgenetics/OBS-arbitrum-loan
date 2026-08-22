@@ -18,24 +18,33 @@ contract ObscuraLoanProductionTest is Test {
     ObscuraLoan public loanContract;
     MockOBS public obsToken;
     
+    address constant HARDCODED_OBS = 0x2D8760e2877148d239a54952A458710553B2B54b;
+    
     address aiOracle = address(0x111);
     address staker = address(0x222);
     address borrower = address(0x333);
     address liquidator = address(0x444);
 
     function setUp() public {
+        // Deploy mock OBS and etch its bytecode to the hardcoded mainnet address for testing
         obsToken = new MockOBS();
+        bytes memory code = address(obsToken).code;
+        vm.etch(HARDCODED_OBS, code);
+
+        // Fund actors via the hardcoded address interface
+        MockOBS obs = MockOBS(HARDCODED_OBS);
+        obs.mint(staker, 10_000 * 10**18);
+        obs.mint(borrower, 10_000 * 10**18);
+
         loanContract = new ObscuraLoan(aiOracle, hex"1234");
-        
-        obsToken.mint(staker, 10_000 * 10**18);
-        obsToken.mint(borrower, 10_000 * 10**18);
-        deal(address(obsToken), 0x2D8760e2877148d239a54952A458710553B2B54b, 50_000 * 10**18);
     }
 
     function test_AIOracleScoringAndLiquidation() public {
+        MockOBS obs = MockOBS(HARDCODED_OBS);
+
         // 1. Staker funds the pool
         vm.startPrank(staker);
-        obsToken.approve(address(loanContract), 2_000 * 10**18);
+        obs.approve(address(loanContract), 2_000 * 10**18);
         loanContract.stakeLiquidity(2_000 * 10**18);
         vm.stopPrank();
 
@@ -46,7 +55,7 @@ contract ObscuraLoanProductionTest is Test {
 
         // 3. Borrower takes a high-LTV loan
         vm.startPrank(borrower);
-        obsToken.approve(address(loanContract), 1_000 * 10**18);
+        obs.approve(address(loanContract), 1_000 * 10**18);
         loanContract.requestLoan(1_000 * 10**18, 800 * 10**18, ObscuraLoan.LoanDuration.Days90);
         vm.stopPrank();
 

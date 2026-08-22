@@ -44,7 +44,6 @@ contract ObscuraLoanUltimateProductionTest is Test {
         obs.mint(borrowerStandard, 100_000 * 10**18);
         obs.mint(attackerMalicious, 50_000 * 10**18);
 
-        // Initialize contract with AI Oracle and default global hybrid PQC key
         loanContract = new ObscuraLoan(aiOracle, hex"0123456789abcdef0123456789abcdef");
     }
 
@@ -78,7 +77,7 @@ contract ObscuraLoanUltimateProductionTest is Test {
 
         vm.prank(aiOracle);
         loanContract.updateCreditScore(borrowerElite, eliteScore, eliteSig, validPqcProof);
-        assertEq(loanContract.calculateLTV(borrowerElite), 15000); // Max 150% LTV
+        assertEq(loanContract.calculateLTV(borrowerElite), 15000);
 
         uint256 stdScore = 500;
         bytes32 stdHash = keccak256(abi.encodePacked(borrowerStandard, stdScore, block.chainid));
@@ -87,18 +86,16 @@ contract ObscuraLoanUltimateProductionTest is Test {
 
         vm.prank(aiOracle);
         loanContract.updateCreditScore(borrowerStandard, stdScore, stdSig, validPqcProof);
-        assertEq(loanContract.calculateLTV(borrowerStandard), 5000); // Base 50% LTV
+        assertEq(loanContract.calculateLTV(borrowerStandard), 5000);
 
         // =========================================================================
         // 4. ELITE BORROWER LOAN ISSUANCE & BETA STAKER DILUTION
         // =========================================================================
         vm.startPrank(borrowerElite);
         obs.approve(address(loanContract), 2_000 * 10**18);
-        // Request 3,000 OBS loan backed by 2,000 OBS collateral (150% LTV)
         loanContract.requestLoan(3_000 * 10**18, 2_000 * 10**18, ObscuraLoan.LoanDuration.Year1);
         vm.stopPrank();
 
-        // Staker Beta stakes into the pool while an active loan is outstanding
         vm.startPrank(stakerBeta);
         obs.approve(address(loanContract), 25_000 * 10**18);
         uint256 lpBeta = loanContract.stakeLiquidity(25_000 * 10**18);
@@ -108,19 +105,22 @@ contract ObscuraLoanUltimateProductionTest is Test {
         // =========================================================================
         // 5. ADVERSARIAL BOUNDARY & TAMPER-RESISTANCE TESTS
         // =========================================================================
-        // Test unauthorized AI oracle caller
         vm.startPrank(attackerMalicious);
         vm.expectRevert("Unauthorized AI Oracle");
         loanContract.updateCreditScore(borrowerStandard, 800, stdSig, validPqcProof);
         vm.stopPrank();
 
-        // Test invalid PQC lattice proof payload rejection
+        // Generate valid signature for score 650 to test PQC envelope rejection cleanly
+        uint256 badProofScore = 650;
+        bytes32 badProofHash = keccak256(abi.encodePacked(borrowerStandard, badProofScore, block.chainid));
+        (uint8 vBP, bytes32 rBP, bytes32 sBP) = vm.sign(aiOraclePk, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", badProofHash)));
+        bytes memory badProofSig = abi.encodePacked(rBP, sBP, vBP);
+
         bytes memory tamperedProof = hex"deadbeef";
         vm.prank(aiOracle);
         vm.expectRevert("PQC Envelope verification failed");
-        loanContract.updateCreditScore(borrowerStandard, 650, stdSig, tamperedProof);
+        loanContract.updateCreditScore(borrowerStandard, badProofScore, badProofSig, tamperedProof);
 
-        // Test LTV boundary violation
         vm.startPrank(borrowerStandard);
         obs.approve(address(loanContract), 1_000 * 10**18);
         vm.expectRevert("LTV Exceeded");
@@ -132,7 +132,7 @@ contract ObscuraLoanUltimateProductionTest is Test {
         // =========================================================================
         vm.startPrank(borrowerElite);
         uint256 principalRepayment = 1_000 * 10**18;
-        uint256 expectedInterest = (principalRepayment * 100) / 10000; // 1%
+        uint256 expectedInterest = (principalRepayment * 100) / 10000;
         obs.approve(address(loanContract), principalRepayment + expectedInterest);
         loanContract.repayLoan(principalRepayment);
         vm.stopPrank();
@@ -140,15 +140,13 @@ contract ObscuraLoanUltimateProductionTest is Test {
         // =========================================================================
         // 7. TIME TRAVEL & AUTOMATED LIQUIDATION STRESS
         // =========================================================================
-        // Advance time past loan maturity
         skip(400 * 24 * 60 * 60);
 
         vm.prank(liquidator);
         loanContract.automatedLiquidation(borrowerElite);
 
-        // Verify penalty applied and active debt cleared
-        assertEq(loanContract.creditScores(borrowerElite), 775); // 850 - 75 penalty
-        assertEq(loanContract.totalActiveDebt(), 2_000 * 10**18); // Remaining active principal
+        assertEq(loanContract.creditScores(borrowerElite), 775);
+        assertEq(loanContract.totalActiveDebt(), 2_000 * 10**18);
 
         // =========================================================================
         // 8. STAKER LIQUIDITY WITHDRAWAL & YIELD CAPTURE

@@ -1,65 +1,44 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../src/ObscuraLoan.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-contract MockOBSToken is ERC20 {
+contract MockOBS is ERC20 {
     constructor() ERC20("Obscura", "OBS") {
-        _mint(msg.sender, 1000000 * 10**18);
+        _mint(msg.sender, 10_000_000 * 10**18);
     }
 }
 
 contract ObscuraLoanTest is Test {
     ObscuraLoan public loanContract;
-    MockOBSToken public obsToken;
-
-    address public staker = address(0x1);
-    address public borrower = address(0x2);
-
-    bytes32 public constant HYBRID_PQC_DOMAIN_SEPARATOR = keccak256("OBS_PQC_HYBRID_SIGNATURE_V1");
+    MockOBS public obsToken;
+    
+    address owner = address(this);
+    address aiOracle = address(0x123);
+    address borrower = address(0x456);
 
     function setUp() public {
-        obsToken = new MockOBSToken();
-        loanContract = new ObscuraLoan(address(obsToken));
-
-        obsToken.transfer(staker, 10000 * 10**18);
-        obsToken.transfer(borrower, 10000 * 10**18);
+        obsToken = new MockOBS();
+        bytes memory initialPqcKey = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        
+        // Instantiate with AI oracle and initial Proton hybrid PQC key
+        loanContract = new ObscuraLoan(aiOracle, initialPqcKey);
     }
 
-    function verifyHybridPQCProof(
-        bytes memory classicalSig, 
-        bytes memory pqcProof, 
-        bytes32 messageHash
-    ) public pure returns (bool) {
-        if (classicalSig.length == 0 || pqcProof.length == 0) return false;
-        bytes32 combinedHash = keccak256(abi.encodePacked(HYBRID_PQC_DOMAIN_SEPARATOR, messageHash, classicalSig, pqcProof));
-        return combinedHash != bytes32(0);
+    function test_DeploymentAndConstants() public {
+        assertEq(address(loanContract.OBS_TOKEN()), 0x2D8760e2877148d239a54952A458710553B2B54b);
+        assertEq(loanContract.aiOracle(), aiOracle);
     }
 
-    function testStakeAndRequestLoanWithPQC() public {
-        vm.startPrank(staker);
-        obsToken.approve(address(loanContract), 5000 * 10**18);
-        loanContract.stakeLiquidity(5000 * 10**18);
-        vm.stopPrank();
+    function test_CreditScoreAndLTV() public {
+        // Update credit score via AI oracle
+        vm.prank(aiOracle);
+        loanContract.updateCreditScore(borrower, 850);
 
-        assertEq(loanContract.liquidityPool(), 5000 * 10**18);
-
-        bytes memory dummyClassicalSig = hex"deadbeef";
-        bytes memory dummyPqcProof = bytes("crystalsdilithiumlatticepayload");
-        bytes32 actionHash = keccak256(abi.encodePacked(borrower, uint256(1000 * 10**18)));
-
-        bool isValidPQC = verifyHybridPQCProof(dummyClassicalSig, dummyPqcProof, actionHash);
-        assertTrue(isValidPQC, "Hybrid PQC verification failed");
-
-        vm.startPrank(borrower);
-        obsToken.approve(address(loanContract), 2000 * 10**18);
-        loanContract.requestLoan(1000 * 10**18, 2000 * 10**18, ObscuraLoan.LoanDuration.Year1);
-        vm.stopPrank();
-
-        (uint256 principal, uint256 collateral, ) = loanContract.loans(borrower);
-        assertEq(principal, 1000 * 10**18);
-        assertEq(collateral, 2000 * 10**18);
+        uint256 ltv = loanContract.calculateLTV(borrower);
+        // Max credit (850) should yield max LTV (150% = 15000 BPS)
+        assertEq(ltv, 15000);
     }
 }

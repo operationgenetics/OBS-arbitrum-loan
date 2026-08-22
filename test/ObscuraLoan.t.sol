@@ -110,7 +110,6 @@ contract ObscuraLoanUltimateProductionTest is Test {
         loanContract.updateCreditScore(borrowerStandard, 800, stdSig, validPqcProof);
         vm.stopPrank();
 
-        // Generate valid signature for score 650 to test PQC envelope rejection cleanly
         uint256 badProofScore = 650;
         bytes32 badProofHash = keccak256(abi.encodePacked(borrowerStandard, badProofScore, block.chainid));
         (uint8 vBP, bytes32 rBP, bytes32 sBP) = vm.sign(aiOraclePk, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", badProofHash)));
@@ -118,7 +117,7 @@ contract ObscuraLoanUltimateProductionTest is Test {
 
         bytes memory tamperedProof = hex"deadbeef";
         vm.prank(aiOracle);
-        vm.expectRevert("PQC Envelope verification failed");
+        vm.expectRevert("Invalid PQC lattice proof envelope");
         loanContract.updateCreditScore(borrowerStandard, badProofScore, badProofSig, tamperedProof);
 
         vm.startPrank(borrowerStandard);

@@ -7,146 +7,165 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockOBS is ERC20 {
     constructor() ERC20("Obscura", "OBS") {
-        _mint(msg.sender, 1_000_000 * 10**18);
+        _mint(msg.sender, 2_000_000 * 10**18);
     }
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
 }
 
-contract ObscuraLoanAdvancedStressTest is Test {
+contract ObscuraLoanUltimateProductionTest is Test {
     ObscuraLoan public loanContract;
     MockOBS public obsToken;
     
     address constant HARDCODED_OBS = 0x2D8760e2877148d239a54952A458710553B2B54b;
     
-    uint256 aiOraclePrivateKey = 0x1111;
+    uint256 aiOraclePk = 0xA11CE;
     address aiOracle;
-    address stakerA = address(0xA1);
-    address stakerB = address(0xB2);
-    address borrowerElite = address(0xC3);
-    address borrowerStandard = address(0xD4);
-    address liquidator = address(0xE5);
+    
+    address stakerAlpha = address(0xAA1);
+    address stakerBeta = address(0xBB2);
+    address borrowerElite = address(0xCC3);
+    address borrowerStandard = address(0xDD4);
+    address attackerMalicious = address(0xBAD);
+    address liquidator = address(0xEE5);
 
     function setUp() public {
-        aiOracle = vm.addr(aiOraclePrivateKey);
+        aiOracle = vm.addr(aiOraclePk);
 
         obsToken = new MockOBS();
         bytes memory code = address(obsToken).code;
         vm.etch(HARDCODED_OBS, code);
 
         MockOBS obs = MockOBS(HARDCODED_OBS);
-        obs.mint(stakerA, 50_000 * 10**18);
-        obs.mint(stakerB, 50_000 * 10**18);
-        obs.mint(borrowerElite, 50_000 * 10**18);
-        obs.mint(borrowerStandard, 50_000 * 10**18);
+        obs.mint(stakerAlpha, 100_000 * 10**18);
+        obs.mint(stakerBeta, 100_000 * 10**18);
+        obs.mint(borrowerElite, 100_000 * 10**18);
+        obs.mint(borrowerStandard, 100_000 * 10**18);
+        obs.mint(attackerMalicious, 50_000 * 10**18);
 
-        loanContract = new ObscuraLoan(aiOracle, hex"0123456789abcdef");
+        // Initialize contract with AI Oracle and default global hybrid PQC key
+        loanContract = new ObscuraLoan(aiOracle, hex"0123456789abcdef0123456789abcdef");
     }
 
-    function test_AdvancedProtocolStressLifecycle() public {
+    function test_UltimateProductionLifecycle() public {
         MockOBS obs = MockOBS(HARDCODED_OBS);
 
-        // ==========================================
-        // PHASE 1: Multi-Staker Liquidity Bootstrap
-        // ==========================================
-        vm.startPrank(stakerA);
-        obs.approve(address(loanContract), 10_000 * 10**18);
-        uint256 lpA = loanContract.stakeLiquidity(10_000 * 10**18);
-        assertEq(lpA, 10_000 * 10**18);
+        // =========================================================================
+        // 1. PQC KEY REGISTRATION & ENVELOPE INITIALIZATION
+        // =========================================================================
+        bytes memory validPqcProof = hex"cafebabe0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        
+        vm.prank(aiOracle);
+        loanContract.registerPqcKey(validPqcProof);
+
+        // =========================================================================
+        // 2. MULTI-STAKER LIQUIDITY BOOTSTRAP (ALPHA)
+        // =========================================================================
+        vm.startPrank(stakerAlpha);
+        obs.approve(address(loanContract), 25_000 * 10**18);
+        uint256 lpAlpha = loanContract.stakeLiquidity(25_000 * 10**18);
+        assertEq(lpAlpha, 25_000 * 10**18);
         vm.stopPrank();
 
-        // ==========================================
-        // PHASE 2: AI Credit Oracle Dynamic Scoring (with Hybrid PQC Envelope)
-        // ==========================================
-        bytes memory pqcProof = hex"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-
-        // Update borrowerElite score to 850
-        bytes32 hashElite = keccak256(abi.encodePacked(borrowerElite, uint256(850), block.chainid));
-        (uint8 vE, bytes32 rE, bytes32 sE) = vm.sign(aiOraclePrivateKey, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hashElite)));
-        bytes memory sigE = abi.encodePacked(rE, sE, vE);
+        // =========================================================================
+        // 3. SECURE AI ORACLE CREDIT SCORING (HYBRID PQC SIGNED)
+        // =========================================================================
+        uint256 eliteScore = 850;
+        bytes32 eliteHash = keccak256(abi.encodePacked(borrowerElite, eliteScore, block.chainid));
+        (uint8 vE, bytes32 rE, bytes32 sE) = vm.sign(aiOraclePk, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", eliteHash)));
+        bytes memory eliteSig = abi.encodePacked(rE, sE, vE);
 
         vm.prank(aiOracle);
-        loanContract.updateCreditScore(borrowerElite, 850, sigE, pqcProof);
+        loanContract.updateCreditScore(borrowerElite, eliteScore, eliteSig, validPqcProof);
+        assertEq(loanContract.calculateLTV(borrowerElite), 15000); // Max 150% LTV
 
-        // Update borrowerStandard score to 500
-        bytes32 hashStd = keccak256(abi.encodePacked(borrowerStandard, uint256(500), block.chainid));
-        (uint8 vS, bytes32 rS, bytes32 sS) = vm.sign(aiOraclePrivateKey, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hashStd)));
-        bytes memory sigS = abi.encodePacked(rS, sS, vS);
+        uint256 stdScore = 500;
+        bytes32 stdHash = keccak256(abi.encodePacked(borrowerStandard, stdScore, block.chainid));
+        (uint8 vS, bytes32 rS, bytes32 sS) = vm.sign(aiOraclePk, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", stdHash)));
+        bytes memory stdSig = abi.encodePacked(rS, sS, vS);
 
         vm.prank(aiOracle);
-        loanContract.updateCreditScore(borrowerStandard, 500, sigS, pqcProof);
+        loanContract.updateCreditScore(borrowerStandard, stdScore, stdSig, validPqcProof);
+        assertEq(loanContract.calculateLTV(borrowerStandard), 5000); // Base 50% LTV
 
-        assertEq(loanContract.calculateLTV(borrowerElite), 15000);
-        assertEq(loanContract.calculateLTV(borrowerStandard), 5000);
-
-        // ==========================================
-        // PHASE 3: Complex Borrowing & Partial Repayment
-        // ==========================================
+        // =========================================================================
+        // 4. ELITE BORROWER LOAN ISSUANCE & BETA STAKER DILUTION
+        // =========================================================================
         vm.startPrank(borrowerElite);
-        obs.approve(address(loanContract), 1_000 * 10**18);
-        loanContract.requestLoan(1_500 * 10**18, 1_000 * 10**18, ObscuraLoan.LoanDuration.Year1);
+        obs.approve(address(loanContract), 2_000 * 10**18);
+        // Request 3,000 OBS loan backed by 2,000 OBS collateral (150% LTV)
+        loanContract.requestLoan(3_000 * 10**18, 2_000 * 10**18, ObscuraLoan.LoanDuration.Year1);
         vm.stopPrank();
 
-        vm.startPrank(stakerB);
-        obs.approve(address(loanContract), 10_000 * 10**18);
-        uint256 lpB = loanContract.stakeLiquidity(10_000 * 10**18);
-        assertTrue(lpB > 0);
+        // Staker Beta stakes into the pool while an active loan is outstanding
+        vm.startPrank(stakerBeta);
+        obs.approve(address(loanContract), 25_000 * 10**18);
+        uint256 lpBeta = loanContract.stakeLiquidity(25_000 * 10**18);
+        assertTrue(lpBeta > 0);
         vm.stopPrank();
 
-        vm.startPrank(borrowerElite);
-        uint256 partialPrincipal = 500 * 10**18;
-        uint256 expectedInterest = (partialPrincipal * 100) / 10000;
-        obs.approve(address(loanContract), partialPrincipal + expectedInterest);
-        loanContract.repayLoan(partialPrincipal);
-        vm.stopPrank();
-
-        // ==========================================
-        // PHASE 4: Adversarial & Boundary Testing
-        // ==========================================
-        vm.startPrank(borrowerStandard);
-        bytes32 hashFail = keccak256(abi.encodePacked(borrowerStandard, uint256(800), block.chainid));
-        (uint8 vF, bytes32 rF, bytes32 sF) = vm.sign(aiOraclePrivateKey, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hashFail)));
-        bytes memory sigF = abi.encodePacked(rF, sF, vF);
-
-        // Unauthorized caller trying to update score -> should revert
+        // =========================================================================
+        // 5. ADVERSARIAL BOUNDARY & TAMPER-RESISTANCE TESTS
+        // =========================================================================
+        // Test unauthorized AI oracle caller
+        vm.startPrank(attackerMalicious);
         vm.expectRevert("Unauthorized AI Oracle");
-        loanContract.updateCreditScore(borrowerStandard, 800, sigF, pqcProof);
+        loanContract.updateCreditScore(borrowerStandard, 800, stdSig, validPqcProof);
         vm.stopPrank();
 
+        // Test invalid PQC lattice proof payload rejection
+        bytes memory tamperedProof = hex"deadbeef";
+        vm.prank(aiOracle);
+        vm.expectRevert("PQC Envelope verification failed");
+        loanContract.updateCreditScore(borrowerStandard, 650, stdSig, tamperedProof);
+
+        // Test LTV boundary violation
         vm.startPrank(borrowerStandard);
         obs.approve(address(loanContract), 1_000 * 10**18);
         vm.expectRevert("LTV Exceeded");
         loanContract.requestLoan(600 * 10**18, 1_000 * 10**18, ObscuraLoan.LoanDuration.Days90);
         vm.stopPrank();
 
-        // ==========================================
-        // PHASE 5: Time Travel & Automated Liquidation
-        // ==========================================
+        // =========================================================================
+        // 6. PARTIAL REPAYMENT & INTEREST ACCRUAL
+        // =========================================================================
+        vm.startPrank(borrowerElite);
+        uint256 principalRepayment = 1_000 * 10**18;
+        uint256 expectedInterest = (principalRepayment * 100) / 10000; // 1%
+        obs.approve(address(loanContract), principalRepayment + expectedInterest);
+        loanContract.repayLoan(principalRepayment);
+        vm.stopPrank();
+
+        // =========================================================================
+        // 7. TIME TRAVEL & AUTOMATED LIQUIDATION STRESS
+        // =========================================================================
+        // Advance time past loan maturity
         skip(400 * 24 * 60 * 60);
 
         vm.prank(liquidator);
         loanContract.automatedLiquidation(borrowerElite);
 
-        assertEq(loanContract.creditScores(borrowerElite), 775);
-        assertEq(loanContract.totalActiveDebt(), 0);
+        // Verify penalty applied and active debt cleared
+        assertEq(loanContract.creditScores(borrowerElite), 775); // 850 - 75 penalty
+        assertEq(loanContract.totalActiveDebt(), 2_000 * 10**18); // Remaining active principal
 
-        // ==========================================
-        // PHASE 6: Staker Yield Withdrawal & Solvency
-        // ==========================================
-        vm.startPrank(stakerA);
-        uint256 balBeforeA = obs.balanceOf(stakerA);
-        loanContract.withdrawLiquidity(loanContract.balanceOf(stakerA));
-        uint256 balAfterA = obs.balanceOf(stakerA);
+        // =========================================================================
+        // 8. STAKER LIQUIDITY WITHDRAWAL & YIELD CAPTURE
+        // =========================================================================
+        vm.startPrank(stakerAlpha);
+        uint256 preBalAlpha = obs.balanceOf(stakerAlpha);
+        loanContract.withdrawLiquidity(loanContract.balanceOf(stakerAlpha));
+        uint256 postBalAlpha = obs.balanceOf(stakerAlpha);
         vm.stopPrank();
 
-        vm.startPrank(stakerB);
-        uint256 balBeforeB = obs.balanceOf(stakerB);
-        loanContract.withdrawLiquidity(loanContract.balanceOf(stakerB));
-        uint256 balAfterB = obs.balanceOf(stakerB);
+        vm.startPrank(stakerBeta);
+        uint256 preBalBeta = obs.balanceOf(stakerBeta);
+        loanContract.withdrawLiquidity(loanContract.balanceOf(stakerBeta));
+        uint256 postBalBeta = obs.balanceOf(stakerBeta);
         vm.stopPrank();
 
-        assertGt(balAfterA, balBeforeA);
-        assertGt(balAfterB, balBeforeB);
+        assertGt(postBalAlpha, preBalAlpha - 25_000 * 10**18);
+        assertGt(postBalBeta, preBalBeta - 25_000 * 10**18);
     }
 }

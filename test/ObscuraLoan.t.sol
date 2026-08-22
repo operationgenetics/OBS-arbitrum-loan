@@ -7,38 +7,59 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockOBS is ERC20 {
     constructor() ERC20("Obscura", "OBS") {
-        _mint(msg.sender, 10_000_000 * 10**18);
+        _mint(msg.sender, 100_000 * 10**18);
+    }
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
     }
 }
 
-contract ObscuraLoanTest is Test {
+contract ObscuraLoanProductionTest is Test {
     ObscuraLoan public loanContract;
     MockOBS public obsToken;
     
-    address owner = address(this);
-    address aiOracle = address(0x123);
-    address borrower = address(0x456);
+    address aiOracle = address(0x111);
+    address staker = address(0x222);
+    address borrower = address(0x333);
+    address liquidator = address(0x444);
 
     function setUp() public {
         obsToken = new MockOBS();
-        bytes memory initialPqcKey = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        loanContract = new ObscuraLoan(aiOracle, hex"1234");
         
-        // Instantiate with AI oracle and initial Proton hybrid PQC key
-        loanContract = new ObscuraLoan(aiOracle, initialPqcKey);
+        obsToken.mint(staker, 10_000 * 10**18);
+        obsToken.mint(borrower, 10_000 * 10**18);
+        deal(address(obsToken), 0x2D8760e2877148d239a54952A458710553B2B54b, 50_000 * 10**18);
     }
 
-    function test_DeploymentAndConstants() public {
-        assertEq(address(loanContract.OBS_TOKEN()), 0x2D8760e2877148d239a54952A458710553B2B54b);
-        assertEq(loanContract.aiOracle(), aiOracle);
-    }
+    function test_AIOracleScoringAndLiquidation() public {
+        // 1. Staker funds the pool
+        vm.startPrank(staker);
+        obsToken.approve(address(loanContract), 2_000 * 10**18);
+        loanContract.stakeLiquidity(2_000 * 10**18);
+        vm.stopPrank();
 
-    function test_CreditScoreAndLTV() public {
-        // Update credit score via AI oracle
+        // 2. AI Oracle updates score to 850 (Unlocks 150% LTV)
         vm.prank(aiOracle);
         loanContract.updateCreditScore(borrower, 850);
+        assertEq(loanContract.calculateLTV(borrower), 15000);
 
-        uint256 ltv = loanContract.calculateLTV(borrower);
-        // Max credit (850) should yield max LTV (150% = 15000 BPS)
-        assertEq(ltv, 15000);
+        // 3. Borrower takes a high-LTV loan
+        vm.startPrank(borrower);
+        obsToken.approve(address(loanContract), 1_000 * 10**18);
+        loanContract.requestLoan(1_000 * 10**18, 800 * 10**18, ObscuraLoan.LoanDuration.Days90);
+        vm.stopPrank();
+
+        // 4. Fast forward time past loan maturity to trigger liquidation condition
+        skip(8_000_000);
+
+        // 5. Liquidator executes liquidation
+        vm.prank(liquidator);
+        loanContract.automatedLiquidation(borrower);
+
+        // Verify loan is wiped and borrower score was penalized
+        (, , uint256 maturity, ) = loanContract.loans(borrower);
+        assertEq(maturity, 0);
+        assertEq(loanContract.creditScores(borrower), 775); // 850 - 75 penalty
     }
 }

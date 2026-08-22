@@ -2,30 +2,27 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
+contract ObscuraLoan is ERC20, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
-    // Permanently hardcoded OBS token address
     address public constant OBS_TOKEN_ADDRESS = 0x2D8760e2877148d239a54952A458710553B2B54b;
     IERC20 public immutable OBS_TOKEN;
     
     address public aiOracle;
-    
-    // Proton-grade Hybrid PQC Public Key Registry (Ed25519 + ML-DSA / Dilithium)
     bytes public protonHybridPqcPublicKey;
 
     uint256 public constant INTEREST_RATE_BPS = 100; // 1% fixed interest
     uint256 public constant BASE_CREDIT = 500;
-    uint256 public constant MAX_CREDIT = 850;         // Expanded credit ceiling for AI oracle
+    uint256 public constant MAX_CREDIT = 850;         
     
-    // LTV parameters (scaled by 100, e.g., 150% = 15000)
     uint256 public constant MIN_LTV_BPS = 5000;       // 50%
-    uint256 public constant MAX_LTV_BPS = 15000;      // 150% max LTV for elite AI credit scores
+    uint256 public constant MAX_LTV_BPS = 15000;      // 150% max LTV
 
     enum LoanDuration { Days90, Year1, Year15 }
 
@@ -36,73 +33,66 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
         uint256 ltvAtBorrow;
     }
 
-    uint256 public liquidityPool;
     uint256 public totalActiveDebt;
-    uint256 public loanExecutionNonce;
     
     mapping(address => uint256) public creditScores;
     mapping(address => Loan) public loans;
 
-    event LiquidityStaked(address indexed staker, uint256 amount);
-    event LiquidityWithdrawn(address indexed staker, uint256 amount);
+    event LiquidityStaked(address indexed staker, uint256 obsStaked, uint256 lpMinted);
+    event LiquidityWithdrawn(address indexed staker, uint256 obsReturned, uint256 lpBurned);
     event LoanRequested(address indexed borrower, uint256 amount, uint256 collateral, uint256 ltv, uint256 maturity);
     event LoanRepaid(address indexed borrower, uint256 principalPaid, uint256 interestPaid);
     event LoanLiquidated(address indexed borrower, address indexed liquidator, uint256 seizedCollateral);
     event CreditScoreUpdated(address indexed user, uint256 newScore);
-    event AIOracleUpdated(address indexed newOracle);
-    event ProtonHybridPqcKeyUpdated(bytes newKey);
-    event LoanActionExecutedWithProtonPQC(uint256 indexed nonce, string actionDescription);
 
-    modifier onlyAIOracleOrOwner() {
-        require(msg.sender == aiOracle || msg.sender == owner(), "Unauthorized: AI Oracle or Owner only");
-        _;
-    }
-
-    constructor(address _aiOracle, bytes memory _initialProtonPqcKey) Ownable(msg.sender) {
+    constructor(address _aiOracle, bytes memory _initialProtonPqcKey) 
+        ERC20("Obscura Staked OBS LP", "OBS-LP") 
+        Ownable(msg.sender) 
+    {
         require(_aiOracle != address(0), "Invalid oracle address");
         OBS_TOKEN = IERC20(OBS_TOKEN_ADDRESS);
         aiOracle = _aiOracle;
         protonHybridPqcPublicKey = _initialProtonPqcKey;
     }
 
-    function setAIOracle(address _newOracle) external onlyOwner {
-        require(_newOracle != address(0), "Invalid oracle address");
-        aiOracle = _newOracle;
-        emit AIOracleUpdated(_newOracle);
+    function totalPooledOBS() public view returns (uint256) {
+        return OBS_TOKEN.balanceOf(address(this));
     }
 
-    function updateProtonHybridPqcKey(bytes calldata _newKey) external onlyOwner {
-        require(_newKey.length > 0, "Invalid hybrid PQC key");
-        protonHybridPqcPublicKey = _newKey;
-        emit ProtonHybridPqcKeyUpdated(_newKey);
+    function stakeLiquidity(uint256 obsAmount) external nonReentrant whenNotPaused returns (uint256 lpToMint) {
+        require(obsAmount > 0, "Cannot stake zero");
+        uint256 totalOBS = totalPooledOBS();
+        uint256 totalShares = totalSupply();
+
+        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), obsAmount);
+
+        if (totalShares == 0 || totalOBS == obsAmount) {
+            lpToMint = obsAmount;
+        } else {
+            lpToMint = (obsAmount * totalShares) / (totalOBS - obsAmount);
+        }
+
+        _mint(msg.sender, lpToMint);
+        emit LiquidityStaked(msg.sender, obsAmount, lpToMint);
     }
 
-    function pause() external onlyOwner {
-        _pause();
+    function withdrawLiquidity(uint256 lpAmount) external nonReentrant returns (uint256 obsToReturn) {
+        require(lpAmount > 0, "Cannot withdraw zero");
+        uint256 totalShares = totalSupply();
+        uint256 totalOBS = totalPooledOBS();
+
+        obsToReturn = (lpAmount * totalOBS) / totalShares;
+        uint256 freeLiquidity = totalOBS >= totalActiveDebt ? totalOBS - totalActiveDebt : 0;
+        require(obsToReturn <= freeLiquidity, "Insufficient free liquidity");
+
+        _burn(msg.sender, lpAmount);
+        OBS_TOKEN.safeTransfer(msg.sender, obsToReturn);
+        emit LiquidityWithdrawn(msg.sender, obsToReturn, lpAmount);
     }
 
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    function stakeLiquidity(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0, "Cannot stake zero");
-        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), amount);
-        liquidityPool += amount;
-        emit LiquidityStaked(msg.sender, amount);
-    }
-
-    function withdrawLiquidity(uint256 amount) external nonReentrant {
-        require(amount > 0, "Cannot withdraw zero");
-        uint256 freeLiquidity = liquidityPool >= totalActiveDebt ? liquidityPool - totalActiveDebt : 0;
-        require(amount <= freeLiquidity, "Insufficient free liquidity in pool");
-
-        liquidityPool -= amount;
-        OBS_TOKEN.safeTransfer(msg.sender, amount);
-        emit LiquidityWithdrawn(msg.sender, amount);
-    }
-
-    function updateCreditScore(address user, uint256 score) external onlyAIOracleOrOwner {
+    /// @notice AI Oracle update hook for behavior-based credit scoring
+    function updateCreditScore(address user, uint256 score) external {
+        require(msg.sender == aiOracle || msg.sender == owner(), "Unauthorized AI Oracle");
         require(score >= BASE_CREDIT && score <= MAX_CREDIT, "Score out of bounds");
         creditScores[user] = score;
         emit CreditScoreUpdated(user, score);
@@ -113,11 +103,7 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
         if (score == 0) score = BASE_CREDIT;
         if (score < BASE_CREDIT) score = BASE_CREDIT;
         if (score > MAX_CREDIT) score = MAX_CREDIT;
-
-        uint256 ltvSpread = MAX_LTV_BPS - MIN_LTV_BPS; 
-        uint256 scoreSpread = MAX_CREDIT - BASE_CREDIT;  
-        
-        return MIN_LTV_BPS + (((score - BASE_CREDIT) * ltvSpread) / scoreSpread);
+        return MIN_LTV_BPS + (((score - BASE_CREDIT) * (MAX_LTV_BPS - MIN_LTV_BPS)) / (MAX_CREDIT - BASE_CREDIT));
     }
 
     function requestLoan(uint256 amount, uint256 collateral, LoanDuration duration) external nonReentrant whenNotPaused {
@@ -125,35 +111,19 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
         require(loans[msg.sender].principal == 0, "Active loan exists");
 
         uint256 currentLtvBps = calculateLTV(msg.sender); 
-        uint256 maxAllowedBorrow = (collateral * currentLtvBps) / 10000;
-        require(amount <= maxAllowedBorrow, "LTV Exceeded");
+        require(amount <= (collateral * currentLtvBps) / 10000, "LTV Exceeded");
         
-        uint256 freeLiquidity = liquidityPool >= totalActiveDebt ? liquidityPool - totalActiveDebt : 0;
+        uint256 freeLiquidity = totalPooledOBS() >= totalActiveDebt ? totalPooledOBS() - totalActiveDebt : 0;
         require(freeLiquidity >= amount, "Insufficient pool liquidity");
 
-        uint256 durationSeconds;
-        if (duration == LoanDuration.Days90) {
-            durationSeconds = 7_776_000;
-        } else if (duration == LoanDuration.Year1) {
-            durationSeconds = 31_536_000;
-        } else {
-            durationSeconds = 473_040_000; 
-        }
-
+        uint256 durationSeconds = duration == LoanDuration.Days90 ? 7_776_000 : (duration == LoanDuration.Year1 ? 31_536_000 : 473_040_000);
         uint256 maturityTime = block.timestamp + durationSeconds;
 
         OBS_TOKEN.safeTransferFrom(msg.sender, address(this), collateral);
-
         totalActiveDebt += amount;
         OBS_TOKEN.safeTransfer(msg.sender, amount);
 
-        loans[msg.sender] = Loan({
-            principal: amount,
-            collateral: collateral,
-            maturity: maturityTime,
-            ltvAtBorrow: currentLtvBps
-        });
-
+        loans[msg.sender] = Loan({ principal: amount, collateral: collateral, maturity: maturityTime, ltvAtBorrow: currentLtvBps });
         emit LoanRequested(msg.sender, amount, collateral, currentLtvBps, maturityTime);
     }
 
@@ -163,11 +133,8 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
         require(principalRepayment <= loan.principal, "Overpayment");
 
         uint256 interest = (principalRepayment * INTEREST_RATE_BPS) / 10000;
-        uint256 totalPayment = principalRepayment + interest;
+        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), principalRepayment + interest);
 
-        OBS_TOKEN.safeTransferFrom(msg.sender, address(this), totalPayment);
-
-        liquidityPool += interest;
         totalActiveDebt -= principalRepayment;
 
         if (principalRepayment == loan.principal) {
@@ -182,20 +149,20 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
         emit LoanRepaid(msg.sender, principalRepayment, interest);
     }
 
+    /// @notice Automated liquidation mechanism for expired or undercollateralized loans
     function automatedLiquidation(address borrower) external nonReentrant {
         Loan memory loan = loans[borrower];
-        require(loan.principal > 0, "No Loan");
+        require(loan.principal > 0, "No active loan for borrower");
 
         bool isExpired = block.timestamp > loan.maturity;
         bool isUndercollateralized = loan.principal > (loan.collateral * 95) / 100;
 
-        require(isExpired || isUndercollateralized, "Loan is healthy");
+        require(isExpired || isUndercollateralized, "Loan is currently healthy");
 
         totalActiveDebt = totalActiveDebt >= loan.principal ? totalActiveDebt - loan.principal : 0;
 
         uint256 score = creditScores[borrower];
         if (score == 0) score = BASE_CREDIT;
-        
         uint256 newScore = score >= 75 ? score - 75 : BASE_CREDIT;
         creditScores[borrower] = newScore;
 
@@ -204,22 +171,5 @@ contract ObscuraLoan is Ownable, ReentrancyGuard, Pausable {
 
         emit CreditScoreUpdated(borrower, newScore);
         emit LoanLiquidated(borrower, msg.sender, seizedCollateral);
-    }
-
-    /// @notice Proton-grade hybrid PQC verification (Ed25519 classical + ML-DSA / Dilithium post-quantum layers)
-    function _verifyProtonHybridPQCSignature(bytes32 messageHash, bytes calldata hybridSignature, bytes memory compositePublicKey) internal pure returns (bool) {
-        // Proton composite verification requires valid combined proof lengths and non-zero key entropy
-        if (hybridSignature.length < 128 || compositePublicKey.length < 64) return false;
-        bytes32 keyEntropy = keccak256(compositePublicKey);
-        return keyEntropy != bytes32(0) && messageHash != bytes32(0);
-    }
-
-    function executePqcSecuredLoanAction(bytes calldata actionData, uint256 providedNonce, bytes calldata hybridSignature) external {
-        require(providedNonce == loanExecutionNonce, "Invalid Proton PQC nonce");
-        bytes32 messageHash = keccak256(abi.encodePacked(actionData, providedNonce));
-        require(_verifyProtonHybridPQCSignature(messageHash, hybridSignature, protonHybridPqcPublicKey), "Proton Hybrid PQC Verification Failed");
-        
-        loanExecutionNonce++;
-        emit LoanActionExecutedWithProtonPQC(providedNonce, "Loan protocol action executed via Proton Mail hybrid PQC standard");
     }
 }

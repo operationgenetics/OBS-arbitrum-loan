@@ -54,33 +54,38 @@ import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.so
  *                canceller (governor) can cancel anytime before
  *                execution.
  *
- * WHAT IS GOVERNANCE-CONTROLLED ON OBSCURALOAN
+ * !! STATUS: THIS GOVERNOR CURRENTLY GOVERNS NOTHING !!
  *
- *   - addCommitteeMember / removeCommitteeMember / setScoreThreshold
- *   - setTopTierExposureCap
- *   - setPqcMerkleRootFor (the PQC verifier registration surface;
- *     see ObscuraLoan for the deferred implementation)
- *   - transfer / accept DEFAULT_ADMIN_ROLE on ObscuraLoan
+ *   ObscuraLoan is fully immutable. It has NO owner, NO admin role, NO
+ *   pause, NO upgrade path and NO parameter setter, so there is no
+ *   function on it that a passed proposal could call.
  *
- * WHAT IS NOT GOVERNANCE-CONTROLLED (intentionally)
+ *   Earlier revisions of this file claimed governance control over
+ *   `addCommitteeMember`, `removeCommitteeMember`, `setScoreThreshold`,
+ *   `setTopTierExposureCap`, `setPqcMerkleRootFor` and
+ *   `DEFAULT_ADMIN_ROLE` on ObscuraLoan. NONE of those functions exist.
+ *   That description was wrong and has been removed rather than left to
+ *   mislead a deployer or a token holder into believing the pool is
+ *   governable.
  *
- *   - stakeLiquidity / withdrawLiquidity / claimStakerRewards
- *   - requestLoan / repayLoan / liquidate / accrueInterest
- *   - proposeCreditScore / approveCreditUpdate / executeCreditUpdate
- *     (committee-gated; the committee membership itself is
- *      governance-controlled, but day-to-day credit score
- *      decisions remain committee-driven for speed)
+ *   Do NOT deploy this contract expecting it to steer the lending pool.
+ *   It is retained only as scaffolding for governing FUTURE contracts
+ *   (for example a periphery router, a fee sink, or a v2 pool deployed
+ *   alongside the immutable v1). Either wire it to such a contract, or
+ *   delete it.
  *
- * EMERGENCY PAUSE IS NOT GOVERNANCE-CONTROLLED
+ *   The one privileged key in the protocol — the optional AI credit
+ *   scoring oracle — is an `immutable` constructor argument on
+ *   ObscuraLoan and is likewise NOT governable. It cannot be rotated;
+ *   changing it requires deploying a new pool.
  *
- *   A narrowly-scoped emergency pause (requestLoan + stakeLiquidity
- *   ONLY, never withdrawals/repayments) is held by a separate
- *   GUARDIAN multisig and auto-expires after a fixed window
- *   (72 hours). The pause cannot alter funds or parameters — only
- *   freeze new activity temporarily. This is a deliberate, bounded
- *   centralization tradeoff for security response time. It is
- *   documented explicitly in AUDIT_REPORT.md as a designed-in
- *   tradeoff, not a backdoor.
+ * WHAT IS NOT GOVERNANCE-CONTROLLED (by construction, permanently)
+ *
+ *   - stake / unstake                       (staker funds)
+ *   - requestLoan / repay / payInterest     (borrower actions)
+ *   - liquidate / accrue                    (permissionless keepers)
+ *   - every risk parameter                  (compile-time constants)
+ *   - credit scores                         (algorithmic + bounded oracle)
  *
  * FLASH-LOAN ATTACKS (HONEST DESCRIPTION)
  *

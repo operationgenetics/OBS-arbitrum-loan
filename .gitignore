@@ -1,2 +1,6 @@
-cache/
 out/
+cache/
+node_modules/
+deploy/deployments/
+broadcast/
+.env

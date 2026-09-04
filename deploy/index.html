@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deploy ObscuraLoan — Arbitrum One</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<script src="./artifacts/ObscuraLoan.artifact.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#272b35; --ink:#e8eaed; --dim:#9aa2af;
+    --ok:#3ecf8e; --warn:#e2b341; --err:#ef5f6b; --accent:#5b8def; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+  .wrap{max-width:820px;margin:0 auto;padding:32px 20px 72px}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--dim);margin-bottom:26px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:14px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:0 0 12px;font-weight:600}
+  .row{display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--dim);flex:0 0 auto}
+  .row .v{font-family:var(--mono);font-size:12.5px;text-align:right;word-break:break-all}
+  button{background:var(--accent);color:#fff;border:0;border-radius:7px;padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+  .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+  .check{display:flex;gap:9px;padding:5px 0;align-items:flex-start}
+  .badge{flex:0 0 auto;width:15px;height:15px;border-radius:50%;margin-top:3px;display:grid;place-items:center;font-size:10px;font-weight:700;color:#0f1115}
+  .b-ok{background:var(--ok)} .b-warn{background:var(--warn)} .b-err{background:var(--err)} .b-idle{background:#3a3f4b}
+  .danger{border-color:#5c2a30;background:#1e1417}
+  .danger b{color:var(--err)}
+  code{font-family:var(--mono);font-size:12px;background:#0b0d11;border:1px solid var(--line);border-radius:6px;padding:2px 6px}
+  pre{font-family:var(--mono);font-size:11.5px;background:#0b0d11;border:1px solid var(--line);border-radius:7px;padding:12px;overflow-x:auto;color:var(--dim)}
+  a{color:var(--accent)}
+  .hide{display:none}
+  label{display:block;color:var(--dim);font-size:12px;margin:10px 0 4px}
+  input{width:100%;background:#0b0d11;border:1px solid var(--line);color:var(--ink);border-radius:7px;padding:9px 11px;font-family:var(--mono);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Deploy ObscuraLoan</h1>
+  <div class="sub">Arbitrum One &middot; deploys via MetaMask &middot; adds the network for you</div>
+
+  <div class="card">
+    <h2>1 &middot; Wallet</h2>
+    <div id="walletRows"></div>
+    <div class="btns">
+      <button id="connect">Connect MetaMask</button>
+      <button id="switch" class="ghost hide">Switch to Arbitrum One</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2 &middot; Constructor arguments</h2>
+    <label for="obs">OBS token &mdash; the pool's only asset (immutable)</label>
+    <input id="obs" value="0xa473BdD164F992717Bdbd5F7e10F168C7Ad5D7B0" spellcheck="false">
+    <label for="ai">AI scoring oracle &mdash; leave as the zero address to disable AI scoring entirely</label>
+    <input id="ai" value="0x0000000000000000000000000000000000000000" spellcheck="false">
+    <div class="btns"><button id="preflight" class="ghost" disabled>Run preflight</button></div>
+  </div>
+
+  <div class="card">
+    <h2>3 &middot; Preflight</h2>
+    <div id="checks"><div class="check"><span class="badge b-idle"></span><span style="color:var(--dim)">Not run yet.</span></div></div>
+  </div>
+
+  <div class="card danger">
+    <h2>4 &middot; Deploy</h2>
+    <p style="margin:0 0 12px">
+      <b>This is irreversible.</b> ObscuraLoan has no owner, no pause and no upgrade path.
+      Once deployed, nothing about it can be changed &mdash; including the OBS address and the
+      AI oracle. A bug found later cannot be contained by anyone.
+    </p>
+    <div class="btns"><button id="deploy" disabled>Deploy to Arbitrum One</button></div>
+    <div id="result" style="margin-top:14px"></div>
+  </div>
+</div>
+
+<script>
+const ARBITRUM_ONE = {
+  chainId: '0xa4b1', // 42161
+  chainName: 'Arbitrum One',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: ['https://arb1.arbitrum.io/rpc'],
+  blockExplorerUrls: ['https://arbiscan.io'],
+};
+const OBS_CONSTANT = '0xa473BdD164F992717Bdbd5F7e10F168C7Ad5D7B0';
+const ERC20_ABI = [
+  'function name() view returns (string)',
+  'function symbol() view returns (string)',
+  'function decimals() view returns (uint8)',
+  'function totalSupply() view returns (uint256)',
+];
+
+const $ = (id) => document.getElementById(id);
+let provider, signer, account, chainId;
+
+function rows(el, pairs) {
+  el.innerHTML = pairs.map(([k, v]) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
+}
+function checks(list) {
+  $('checks').innerHTML = list.map(([state, text]) => {
+    const cls = { ok: 'b-ok', warn: 'b-warn', err: 'b-err', idle: 'b-idle' }[state];
+    const glyph = { ok: '✓', warn: '!', err: '✕', idle: '' }[state];
+    return `<div class="check"><span class="badge ${cls}">${glyph}</span><span>${text}</span></div>`;
+  }).join('');
+}
+
+async function refreshWallet() {
+  const net = await provider.getNetwork();
+  chainId = Number(net.chainId);
+  const bal = await provider.getBalance(account);
+  const onArb = chainId === 42161;
+  rows($('walletRows'), [
+    ['Account', account],
+    ['Network', onArb ? 'Arbitrum One (42161)' : `chain ${chainId} — not Arbitrum One`],
+    ['Balance', `${Number(ethers.formatEther(bal)).toFixed(6)} ETH`],
+  ]);
+  $('switch').classList.toggle('hide', onArb);
+  $('preflight').disabled = false;
+}
+
+$('connect').onclick = async () => {
+  if (!window.ethereum) { alert('MetaMask not detected. Install it, then reload this page.'); return; }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send('eth_requestAccounts', []);
+  signer = await provider.getSigner();
+  account = await signer.getAddress();
+  $('connect').textContent = 'Reconnect';
+  await refreshWallet();
+  window.ethereum.on('accountsChanged', () => location.reload());
+  window.ethereum.on('chainChanged', () => location.reload());
+};
+
+$('switch').onclick = async () => {
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: ARBITRUM_ONE.chainId }],
+    });
+  } catch (e) {
+    // 4902 = chain unknown to this wallet; add it, which also switches.
+    if (e.code === 4902 || e?.data?.originalError?.code === 4902) {
+      await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [ARBITRUM_ONE] });
+    } else { alert(e.message); return; }
+  }
+  location.reload();
+};
+
+$('preflight').onclick = async () => {
+  const out = [];
+  $('deploy').disabled = true;
+  try {
+    const obs = ethers.getAddress($('obs').value.trim());
+    const ai  = ethers.getAddress($('ai').value.trim());
+
+    out.push(chainId === 42161
+      ? ['ok', 'Connected to Arbitrum One (42161)']
+      : ['err', `Connected to chain ${chainId}, not Arbitrum One. Switch networks first.`]);
+
+    out.push(obs.toLowerCase() === OBS_CONSTANT.toLowerCase()
+      ? ['ok', 'OBS address matches the OBS_ARBITRUM_ONE constant compiled into the contract']
+      : ['warn', 'OBS address differs from the contract constant — make sure that is intended']);
+
+    const code = await provider.getCode(obs);
+    if (code === '0x') {
+      out.push(['err', 'No contract code at the OBS address. Deploy OBS before the pool.']);
+    } else {
+      out.push(['ok', `OBS contract present (${((code.length / 2 - 1) / 1024).toFixed(1)} KB)`]);
+      try {
+        const t = new ethers.Contract(obs, ERC20_ABI, provider);
+        const [n, s, d, sup] = await Promise.all([t.name(), t.symbol(), t.decimals(), t.totalSupply()]);
+        out.push(sup > 0n
+          ? ['ok', `Responds as ERC-20: ${n} (${s}), ${d} decimals, supply ${ethers.formatUnits(sup, d)}`]
+          : ['err', 'totalSupply() is 0 — the constructor will revert']);
+        if (Number(d) !== 18) out.push(['warn', `${d} decimals; the pool assumes 18`]);
+      } catch {
+        out.push(['err', 'Address does not respond as a standard ERC-20']);
+      }
+    }
+
+    out.push(ai === ethers.ZeroAddress
+      ? ['ok', 'AI oracle disabled — scoring is purely on-chain and no privileged key will exist']
+      : ['warn', 'AI oracle set. It is IMMUTABLE and can shift scores by ±50 points (it cannot unlock 150% alone).']);
+
+    const bal = await provider.getBalance(account);
+    out.push(bal > 0n ? ['ok', `Deployer holds ${Number(ethers.formatEther(bal)).toFixed(6)} ETH for gas`]
+                      : ['err', 'Deployer has no ETH for gas']);
+
+    // Simulate the constructor before asking anyone to sign.
+    const factory = new ethers.ContractFactory(
+      window.OBSCURA_LOAN_ARTIFACT.abi, window.OBSCURA_LOAN_ARTIFACT.bytecode, signer);
+    const txReq = await factory.getDeployTransaction(obs, ai);
+    try {
+      const gas = await provider.estimateGas({ ...txReq, from: account });
+      const fee = await provider.getFeeData();
+      const cost = fee.gasPrice ? ethers.formatEther(gas * fee.gasPrice) : '?';
+      out.push(['ok', `Constructor simulated: ${gas} gas, about ${Number(cost).toFixed(6)} ETH`]);
+    } catch (e) {
+      out.push(['err', `Constructor reverted in simulation: ${e.shortMessage || e.message}`]);
+    }
+  } catch (e) {
+    out.push(['err', e.shortMessage || e.message]);
+  }
+  checks(out);
+  $('deploy').disabled = out.some(([s]) => s === 'err');
+};
+
+$('deploy').onclick = async () => {
+  const obs = ethers.getAddress($('obs').value.trim());
+  const ai  = ethers.getAddress($('ai').value.trim());
+  if (prompt('Type DEPLOY to confirm this irreversible mainnet deployment:') !== 'DEPLOY') return;
+
+  $('deploy').disabled = true;
+  $('result').innerHTML = '<div style="color:var(--dim)">Awaiting signature in MetaMask…</div>';
+  try {
+    const factory = new ethers.ContractFactory(
+      window.OBSCURA_LOAN_ARTIFACT.abi, window.OBSCURA_LOAN_ARTIFACT.bytecode, signer);
+    const contract = await factory.deploy(obs, ai);
+    const tx = contract.deploymentTransaction();
+    $('result').innerHTML =
+      `<div style="color:var(--dim)">Broadcast. Waiting for confirmation…</div>
+       <div class="row"><span class="k">tx</span><span class="v">${tx.hash}</span></div>`;
+    await contract.waitForDeployment();
+    const address = await contract.getAddress();
+
+    const pool = new ethers.Contract(address, window.OBSCURA_LOAN_ARTIFACT.abi, provider);
+    const [wiredObs, wiredAi, topTier, minS, maxS] = await Promise.all([
+      pool.OBS(), pool.AI_ORACLE(), pool.LTV_TOP_TIER(), pool.MIN_CREDIT_SCORE(), pool.MAX_CREDIT_SCORE(),
+    ]);
+    const verified = wiredObs.toLowerCase() === obs.toLowerCase()
+                  && wiredAi.toLowerCase() === ai.toLowerCase()
+                  && topTier === 15000n && minS === 500n && maxS === 850n;
+
+    const record = { contract:'ObscuraLoan', address, chainId, obsToken:obs, aiOracle:ai,
+                     deployer:account, txHash:tx.hash, timestamp:new Date().toISOString() };
+
+    // Report back so deploy.js can verify on-chain and write the record itself.
+    // Best-effort: the deployment already succeeded regardless of this call.
+    try {
+      await fetch('/deployed', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(record) });
+    } catch (_) {}
+
+    $('result').innerHTML = `
+      <div class="row"><span class="k">Deployed at</span><span class="v">${address}</span></div>
+      <div class="row"><span class="k">Transaction</span><span class="v">${tx.hash}</span></div>
+      <div class="row"><span class="k">On-chain state</span><span class="v">${verified ? 'verified' : 'MISMATCH — inspect before use'}</span></div>
+      <p><a href="https://arbiscan.io/address/${address}" target="_blank" rel="noopener">View on Arbiscan</a></p>
+      <p style="color:var(--dim);margin-bottom:6px">Verify the source:</p>
+      <pre>forge verify-contract ${address} src/ObscuraLoan.sol:ObscuraLoan \\
+  --chain arbitrum --watch \\
+  --constructor-args $(cast abi-encode "constructor(address,address)" ${obs} ${ai})</pre>
+      <p style="color:var(--dim);margin-bottom:6px">Deployment record:</p>
+      <pre>${JSON.stringify(record, null, 2)}</pre>`;
+  } catch (e) {
+    $('result').innerHTML = `<div style="color:var(--err)">${e.shortMessage || e.message}</div>`;
+    $('deploy').disabled = false;
+  }
+};
+
+// Guard: the page is useless without the generated artifact.
+if (!window.OBSCURA_LOAN_ARTIFACT) {
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="background:#5c2a30;padding:12px;text-align:center">artifacts/ObscuraLoan.artifact.js is missing. Run <code>forge build && node deploy/export-artifacts.js</code>.</div>');
+}
+</script>
+</body>
+</html>

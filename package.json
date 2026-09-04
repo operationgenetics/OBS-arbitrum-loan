@@ -1,0 +1,24 @@
+{
+  "name": "obscura-loan",
+  "version": "1.0.0",
+  "description": "OBS-denominated credit-scored lending pool for Arbitrum One, with native hybrid post-quantum authorisation.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "FOUNDRY_PROFILE=production forge build && FOUNDRY_PROFILE=production node deploy/export-artifacts.js",
+    "test": "forge test && FOUNDRY_PROFILE=production forge test",
+    "test:fork": "forge test --match-path test/ForkArbitrum.t.sol -vv",
+    "test:invariant": "forge test --match-path test/Invariant.t.sol -vv",
+    "pqc:check": "node tools/wots-check.js",
+    "deploy:dry": "node deploy/deploy.js --dry-run",
+    "deploy": "node deploy/deploy.js",
+    "deploy:qr": "node deploy/deploy.js --qr",
+    "deploy:qr:web": "node deploy/deploy.js --qr-web"
+  },
+  "dependencies": {
+    "@metamask/sdk": "^0.34.0",
+    "@walletconnect/universal-provider": "^2.24.0",
+    "ethers": "^6.13.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
